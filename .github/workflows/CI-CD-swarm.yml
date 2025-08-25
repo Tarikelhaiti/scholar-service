@@ -23,7 +23,7 @@ jobs:
           distribution: temurin
           java-version: '21'
 
-      # Jar exécutable (repackage)
+      # Jar exécutable
       - name: Build app (Maven)
         run: mvn -q -DskipTests package spring-boot:repackage
 
@@ -34,7 +34,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Construire l'image en minuscules (GHCR n'accepte pas les majuscules)
+      # Tag d'image en minuscules (GHCR n'accepte pas les majuscules)
       - name: Compute image ref (lowercase)
         run: |
           OWNER_LC=${GITHUB_REPOSITORY_OWNER,,}
@@ -67,7 +67,7 @@ jobs:
           source: "deploy/*"
           target: "/home/azureuser/"
 
-      # Déploiement via SSH "raw" (contourne le bug username vide)
+      # Déploiement via SSH "raw" (plus robuste que l'action ssh)
       - name: Deploy to Swarm via RAW SSH
         env:
           SSH_HOST: ${{ secrets.SSH_HOST }}
@@ -92,8 +92,9 @@ jobs:
           # Exécution distante
           ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_rsa azureuser@"$SSH_HOST" "
             set -euo pipefail
+            cd /home/azureuser/deploy
             echo Using image: ${IMAGE}
-            ls -lah /home/azureuser/deploy || true
+            ls -lah .
 
             docker login ghcr.io -u '${GH_ACTOR}' -p '${GH_TOKEN}'
             docker pull '${IMAGE}' || true
@@ -102,7 +103,7 @@ jobs:
             export REPO_NAME='${REPO_LC}'
             export DB_PASSWORD='${DB_PASSWORD}'
 
-            docker stack deploy -c /home/azureuser/deploy/docker-stack.yml swarmdemo
+            docker stack deploy -c docker-stack.yml swarmdemo
 
             docker service ls
             docker service ps swarmdemo_app || true

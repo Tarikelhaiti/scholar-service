@@ -11,9 +11,9 @@ volumes:
 
 configs:
   promtail-config:
-    file: ./deploy/promtail-config.yml
+    file: ./promtail-config.yml
   grafana-datasource:
-    file: ./deploy/grafana-datasource.yml
+    file: ./grafana-datasource.yml
 
 services:
   postgres:
