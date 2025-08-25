@@ -1,8 +1,8 @@
 name: CI-CD Swarm
+
 on:
   push:
-    branches:
-      - main
+    branches: [ "main" ]
   workflow_dispatch:
 
 permissions:
@@ -23,6 +23,7 @@ jobs:
           distribution: temurin
           java-version: '21'
 
+      # Jar exécutable (repackage)
       - name: Build app (Maven)
         run: mvn -q -DskipTests package spring-boot:repackage
 
@@ -33,6 +34,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Construire l'image en minuscules (GHCR n'accepte pas les majuscules)
       - name: Compute image ref (lowercase)
         run: |
           OWNER_LC=${GITHUB_REPOSITORY_OWNER,,}
@@ -52,11 +54,10 @@ jobs:
   deploy:
     needs: build-and-push
     runs-on: ubuntu-latest
-    env: 
-      SSH_USER: azureuser
     steps:
       - uses: actions/checkout@v4
 
+      # Copie TOUT le dossier deploy/ (stack + configs monitoring)
       - name: Copy deploy artifacts to VM
         uses: appleboy/scp-action@v0.1.7
         with:
@@ -66,32 +67,44 @@ jobs:
           source: "deploy/*"
           target: "/home/azureuser/"
 
-      - name: Deploy to Swarm via SSH
-        uses: appleboy/ssh-action@v1.1.0
-        with:
-          host: ${{ secrets.SSH_HOST }}
-          username: azureuser
-          key: ${{ secrets.SSH_KEY }}
-          script: |
-            set -e
-            OWNER_LC=$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')
-            REPO_LC=$(echo "${GITHUB_REPOSITORY}" | cut -d/ -f2 | tr '[:upper:]' '[:lower:]')
+      # Déploiement via SSH "raw" (contourne le bug username vide)
+      - name: Deploy to Swarm via RAW SSH
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_KEY: ${{ secrets.SSH_KEY }}
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+          GH_OWNER: ${{ github.repository_owner }}
+          GH_REPO:  ${{ github.repository }}
+          GH_ACTOR: ${{ github.actor }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Prépare la clé
+          mkdir -p ~/.ssh
+          echo "$SSH_KEY" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
 
-            export GITHUB_OWNER="${OWNER_LC}"
-            export REPO_NAME="${REPO_LC}"
-            export DB_PASSWORD="${DB_PASSWORD}"
+          # Owner/Repo en minuscules pour GHCR
+          OWNER_LC=$(echo "$GH_OWNER" | tr '[:upper:]' '[:lower:]')
+          REPO_LC=$(echo "$GH_REPO"  | cut -d/ -f2 | tr '[:upper:]' '[:lower:]')
+          IMAGE="ghcr.io/${OWNER_LC}/${REPO_LC}:latest"
 
-            docker login ghcr.io -u "${GITHUB_ACTOR}" -p "${GITHUB_TOKEN}"
-            docker pull "ghcr.io/${OWNER_LC}/${REPO_LC}:latest" || true
+          # Exécution distante
+          ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_rsa azureuser@"$SSH_HOST" "
+            set -euo pipefail
+            echo Using image: ${IMAGE}
+            ls -lah /home/azureuser/deploy || true
 
-            docker stack deploy -c "/home/azureuser/deploy/docker-stack.yml" swarmdemo
+            docker login ghcr.io -u '${GH_ACTOR}' -p '${GH_TOKEN}'
+            docker pull '${IMAGE}' || true
+
+            export GITHUB_OWNER='${OWNER_LC}'
+            export REPO_NAME='${REPO_LC}'
+            export DB_PASSWORD='${DB_PASSWORD}'
+
+            docker stack deploy -c /home/azureuser/deploy/docker-stack.yml swarmdemo
 
             docker service ls
-            docker service ps swarmdemo_app
-        env:
-          GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-          GITHUB_ACTOR: ${{ github.actor }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          SSH_USER: ${{ secrets.SSH_USER }}
-          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+            docker service ps swarmdemo_app || true
+            docker service ps swarmdemo_postgres || true
+          "
