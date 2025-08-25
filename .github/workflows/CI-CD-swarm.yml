@@ -2,7 +2,8 @@ name: CI-CD Swarm
 
 on:
   push:
-    branches: [ "main" ]
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:
@@ -13,7 +14,20 @@ env:
   REGISTRY: ghcr.io
 
 jobs:
+  validate-env:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check required secrets
+        run: |
+          [ -n "${{ secrets.SSH_HOST }}" ]           || (echo "Missing SSH_HOST" && exit 1)
+          [ -n "${{ secrets.SSH_KEY }}" ]            || (echo "Missing SSH_KEY" && exit 1)
+          [ -n "${{ secrets.DB_PASSWORD }}" ]        || (echo "Missing DB_PASSWORD" && exit 1)
+          [ -n "${{ secrets.OAUTH_ISSUER_URI }}" ]   || (echo "Missing OAUTH_ISSUER_URI" && exit 1)
+          [ -n "${{ secrets.OAUTH_AUDIENCE }}" ]     || (echo "Missing OAUTH_AUDIENCE" && exit 1)
+          echo "✅ All required secrets present"
+
   build-and-push:
+    needs: validate-env
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -67,7 +81,7 @@ jobs:
           source: "deploy/*"
           target: "/home/azureuser/"
 
-      # Déploiement via SSH "raw" (plus robuste que l'action ssh)
+      # Déploiement via SSH "raw"
       - name: Deploy to Swarm via RAW SSH
         env:
           SSH_HOST: ${{ secrets.SSH_HOST }}
@@ -77,6 +91,8 @@ jobs:
           GH_REPO:  ${{ github.repository }}
           GH_ACTOR: ${{ github.actor }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OAUTH_ISSUER_URI: ${{ secrets.OAUTH_ISSUER_URI }}
+          OAUTH_AUDIENCE:   ${{ secrets.OAUTH_AUDIENCE }}
         run: |
           set -euo pipefail
           # Prépare la clé
@@ -99,13 +115,19 @@ jobs:
             docker login ghcr.io -u '${GH_ACTOR}' -p '${GH_TOKEN}'
             docker pull '${IMAGE}' || true
 
+            # Vars lues par docker-stack.yml (service app)
             export GITHUB_OWNER='${OWNER_LC}'
             export REPO_NAME='${REPO_LC}'
             export DB_PASSWORD='${DB_PASSWORD}'
+            export OAUTH_ISSUER_URI='${OAUTH_ISSUER_URI}'
+            export OAUTH_AUDIENCE='${OAUTH_AUDIENCE}'
+
+            # (optionnel) retirer une ancienne exclusion OAuth si elle avait été posée à chaud
+            docker service update --env-rm SPRING_AUTOCONFIGURE_EXCLUDE swarmdemo_app 2>/dev/null || true
 
             docker stack deploy -c docker-stack.yml swarmdemo
 
             docker service ls
-            docker service ps swarmdemo_app || true
+            docker service ps swarmdemo_app  || true
             docker service ps swarmdemo_postgres || true
           "
