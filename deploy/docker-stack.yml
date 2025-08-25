@@ -1,0 +1,103 @@
+version: "3.9"
+
+networks:
+  app_net:
+    driver: overlay
+
+volumes:
+  pgdata: {}
+  kafkadata: {}
+  grafanadata: {}   # persistance Grafana
+
+configs:
+  promtail-config:
+    file: ./deploy/promtail-config.yml
+  grafana-datasource:
+    file: ./deploy/grafana-datasource.yml
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: appdb
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: ${DB_PASSWORD}        # fourni par le workflow au moment du deploy
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks: [app_net]
+    deploy: { replicas: 1 }
+
+  kafka:
+    image: bitnami/kafka:3.7
+    environment:
+      KAFKA_ENABLE_KRAFT: "yes"
+      KAFKA_CFG_NODE_ID: "1"
+      KAFKA_CFG_PROCESS_ROLES: "broker,controller"
+      KAFKA_CFG_CONTROLLER_QUORUM_VOTERS: "1@kafka:9093"
+      KAFKA_CFG_LISTENERS: "PLAINTEXT://:9092,CONTROLLER://:9093"
+      KAFKA_CFG_ADVERTISED_LISTENERS: "PLAINTEXT://kafka:9092"
+      KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT"
+      KAFKA_CFG_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
+      KAFKA_KRAFT_CLUSTER_ID: "kRaFtClusterAAAAAA"
+    volumes:
+      - kafkadata:/bitnami/kafka
+    networks: [app_net]
+    deploy: { replicas: 1 }
+
+  app:
+    # L'image est poussée sur GHCR par le pipeline (owner/repo en minuscules)
+    image: ghcr.io/${GITHUB_OWNER}/${REPO_NAME}:latest
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/appdb
+      SPRING_DATASOURCE_USERNAME: app
+      SPRING_DATASOURCE_PASSWORD: ${DB_PASSWORD}
+    ports:
+      - target: 8080
+        published: 8080
+        protocol: tcp
+        mode: ingress
+    networks: [app_net]
+    depends_on: [postgres, kafka]
+    deploy:
+      replicas: 1
+      restart_policy: { condition: on-failure }
+
+  # --------- Monitoring (logs) ----------
+  loki:
+    image: grafana/loki:2.9.5
+    command: -config.file=/etc/loki/local-config.yaml
+    networks: [app_net]
+    deploy: { replicas: 1 }
+
+  grafana:
+    image: grafana/grafana:10.4.2
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+    ports:
+      - target: 3000
+        published: 3000
+        protocol: tcp
+        mode: ingress
+    volumes:
+      - grafanadata:/var/lib/grafana
+    configs:
+      - source: grafana-datasource
+        target: /etc/grafana/provisioning/datasources/datasource.yml
+    depends_on: [loki]
+    networks: [app_net]
+    deploy: { replicas: 1 }
+
+  promtail:
+    image: grafana/promtail:2.9.5
+    command: -config.file=/etc/promtail/config.yml
+    configs:
+      - source: promtail-config
+        target: /etc/promtail/config.yml
+    volumes:
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks: [app_net]
+    deploy:
+      mode: global   # 1 agent par noeud

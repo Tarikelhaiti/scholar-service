@@ -2,8 +2,8 @@ name: Trigger auto deployment for scholar-service (docker)
 
 on:
   workflow_dispatch:
-  push:
-    branches: [ main ]
+  #push:
+    #branches: [ main ]
 
 env:
   AZURE_CONTAINER_REGISTRY: scholarservice
