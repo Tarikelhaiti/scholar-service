@@ -61,16 +61,16 @@ jobs:
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.SSH_HOST }}
-          username: ${{ env.SSH_USER }}
+          username: azureuser
           key: ${{ secrets.SSH_KEY }}
           source: "deploy/*"
-          target: "/home/${{ env.SSH_USER }}/"
+          target: "/home/azureuser/"
 
       - name: Deploy to Swarm via SSH
         uses: appleboy/ssh-action@v1.1.0
         with:
           host: ${{ secrets.SSH_HOST }}
-          username: ${{ env.SSH_USER }}
+          username: azureuser
           key: ${{ secrets.SSH_KEY }}
           script: |
             set -e
